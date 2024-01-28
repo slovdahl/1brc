@@ -24,12 +24,15 @@ import java.lang.invoke.VarHandle;
 import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 public class CalculateAverage_slovdahl {
 
@@ -99,80 +102,120 @@ public class CalculateAverage_slovdahl {
         }
     }
 
-    public static void main(String[] args) throws IOException {
+    public static void main(String[] args) throws IOException, ExecutionException, InterruptedException {
         // [station name max length 100];[temp max length 5] = 106 max per line
 
-        List<Measurement> measurements = new ArrayList<>();
-        try (Arena arena = Arena.ofConfined();
-                FileChannel channel = FileChannel.open(Paths.get(FILE), StandardOpenOption.READ)) {
+        int segments = Runtime.getRuntime().availableProcessors() / 2;
+        System.out.println("Segments: " + segments);
+
+        try (Arena arena = Arena.ofShared();
+                FileChannel channel = FileChannel.open(Paths.get(FILE), StandardOpenOption.READ);
+                ExecutorService executor = Executors.newThreadPerTaskExecutor(Executors.defaultThreadFactory())) {
 
             long size = channel.size();
-            int sliceSize = 1048576;
-            long position = 0;
-
-            byte[] array = new byte[sliceSize];
-            MemorySegment bufferSegment = MemorySegment.ofArray(array);
-
+            long idealSegmentSize = size / segments;
             MemorySegment mappedFile = channel.map(FileChannel.MapMode.READ_ONLY, 0, size, arena);
+            List<Future<List<Measurement>>> futures = new ArrayList<>(segments);
 
-            while (position < size) {
-                long thisSliceSize = Math.min(sliceSize, size - position);
+            long segmentStart = 0;
+            for (int i = 1; i <= segments; i++) {
+                long actualSegmentOffset = idealSegmentSize * i;
 
-                MemorySegment.copy(
-                        mappedFile,
-                        ValueLayout.JAVA_BYTE,
-                        position,
-                        bufferSegment,
-                        ValueLayout.JAVA_BYTE,
-                        0,
-                        thisSliceSize);
-
-                if (thisSliceSize % 8 != 0) {
-                    bufferSegment
-                            .asSlice(thisSliceSize)
-                            .fill((byte) 0);
+                while (actualSegmentOffset < size && mappedFile.get(ValueLayout.JAVA_BYTE, actualSegmentOffset) != (byte) '\n') {
+                    actualSegmentOffset++;
                 }
 
-                int newlinePosition = 0;
-                int startOffset = 0;
-                int swarOffset = 0;
-                while (true) {
-                    // TODO: support SWAR for MemorySegment?
-                    int eolPosition = swar(array, NEWLINE_PATTERN, swarOffset);
-                    if (eolPosition < 0) {
-                        break;
-                    }
-                    newlinePosition = eolPosition;
-
-                    int semicolonPosition = swar(array, SEMICOLON_PATTERN, swarOffset);
-                    if (semicolonPosition < 0) {
-                        throw new IllegalStateException();
-                    }
-
-                    byte[] temperatureArray = new byte[newlinePosition - semicolonPosition - 1];
-                    System.arraycopy(array, semicolonPosition + 1, temperatureArray, 0, newlinePosition - semicolonPosition - 1);
-
-                    // Station station = new Station(bufferSegment.asSlice(startOffset, semicolonPosition - startOffset).toArray(ValueLayout.JAVA_BYTE));
-
-                    Measurement m = new Measurement(
-                            new String(array, startOffset, semicolonPosition - startOffset),
-                            // TODO: parse and store as int
-                            Double.parseDouble(new String(temperatureArray)));
-
-                    measurements.add(m);
-
-                    array[semicolonPosition] = (byte) 0;
-                    array[newlinePosition] = (byte) 0;
-
-                    startOffset = newlinePosition + 1;
-                    swarOffset = (newlinePosition / Long.BYTES) * Long.BYTES;
+                long end = actualSegmentOffset - segmentStart;
+                if (segmentStart + actualSegmentOffset - segmentStart + 1 < size) {
+                    end += 1;
                 }
 
-                position += newlinePosition + 1;
+                MemorySegment segment = mappedFile.asSlice(segmentStart, end);
+                segmentStart = actualSegmentOffset + 1;
+
+                futures.add(executor.submit(() -> {
+                    int sliceSize = 1048576;
+                    byte[] array = new byte[sliceSize];
+                    MemorySegment bufferSegment = MemorySegment.ofArray(array);
+
+                    long position = 0;
+                    long segmentSize = segment.byteSize();
+                    List<Measurement> measurements = new ArrayList<>();
+
+                    while (position < segmentSize) {
+                        long thisSliceSize = Math.min(sliceSize, segmentSize - position);
+
+                        MemorySegment.copy(
+                                segment,
+                                ValueLayout.JAVA_BYTE,
+                                position,
+                                bufferSegment,
+                                ValueLayout.JAVA_BYTE,
+                                0,
+                                thisSliceSize);
+
+                        if (thisSliceSize % 8 != 0) {
+                            bufferSegment
+                                    .asSlice(thisSliceSize)
+                                    .fill((byte) 0);
+                        }
+
+                        int newlinePosition = 0;
+                        int startOffset = 0;
+                        int swarOffset = 0;
+                        while (true) {
+                            // TODO: support SWAR for MemorySegment?
+                            int eolPosition = swar(array, NEWLINE_PATTERN, swarOffset);
+                            if (eolPosition < 0) {
+                                break;
+                            }
+                            newlinePosition = eolPosition;
+
+                            int semicolonPosition = swar(array, SEMICOLON_PATTERN, swarOffset);
+                            if (semicolonPosition < 0) {
+                                throw new IllegalStateException();
+                            }
+
+                            byte[] temperatureArray = new byte[newlinePosition - semicolonPosition - 1];
+                            System.arraycopy(array, semicolonPosition + 1, temperatureArray, 0, newlinePosition - semicolonPosition - 1);
+
+                            // Station station = new Station(bufferSegment.asSlice(startOffset, semicolonPosition - startOffset).toArray(ValueLayout.JAVA_BYTE));
+
+                            Measurement m = new Measurement(
+                                    new String(array, startOffset, semicolonPosition - startOffset),
+                                    // TODO: parse and store as int
+                                    Double.parseDouble(new String(temperatureArray)));
+
+                            measurements.add(m);
+
+                            array[semicolonPosition] = (byte) 0;
+                            array[newlinePosition] = (byte) 0;
+
+                            startOffset = newlinePosition + 1;
+                            swarOffset = (newlinePosition / Long.BYTES) * Long.BYTES;
+                        }
+
+                        position += newlinePosition + 1;
+                    }
+
+                    return measurements;
+                }));
             }
-        }
 
-        System.out.println("Size: " + measurements.size());
+            System.out.println("Size: " + futures.stream()
+                    .map(f -> {
+                        try {
+                            return f.get();
+                        }
+                        catch (InterruptedException | ExecutionException e) {
+                            throw new RuntimeException(e);
+                        }
+                    })
+                    .mapToLong(List::size)
+                    .sum());
+
+            executor.shutdownNow();
+        }
 
         /*
          * Map<String, ResultRow> unsortedResults = Files.lines(Paths.get(FILE))
