@@ -19,9 +19,7 @@ if [[ -f target/CalculateAverage_slovdahl_image ]]; then
     echo "Graal"
     target/CalculateAverage_slovdahl_image
 else
-    TYPE="ffm"
-    #TYPE="naive"
     JAVA_OPTS="-Xmx10g -Xms10g --enable-preview"
-    echo "JDK $TYPE"
-    java $JAVA_OPTS --class-path target/average-1.0.0-SNAPSHOT.jar dev.morling.onebrc.CalculateAverage_slovdahl $TYPE
+    echo "JDK"
+    java $JAVA_OPTS --class-path target/average-1.0.0-SNAPSHOT.jar dev.morling.onebrc.CalculateAverage_slovdahl
 fi

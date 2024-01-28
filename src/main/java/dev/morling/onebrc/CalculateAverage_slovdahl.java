@@ -39,9 +39,51 @@ public class CalculateAverage_slovdahl {
     private static final long SEMICOLON_PATTERN = compilePattern((byte) ';');
     private static final VarHandle TO_LONG = MethodHandles.byteArrayViewVarHandle(long[].class, ByteOrder.LITTLE_ENDIAN);
 
+    private record Station(byte[] name) {
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) {
+                return true;
+            }
+            if (o == null || getClass() != o.getClass()) {
+                return false;
+            }
+            Station station = (Station) o;
+            return Arrays.equals(name, station.name);
+        }
+
+        @Override
+        public int hashCode() {
+            return Arrays.hashCode(name);
+        }
+    }
+
     private record Measurement(String station, double value) {
-        private Measurement(String[] parts) {
-            this(parts[0], Double.parseDouble(parts[1]));
+        static Measurement of(String[] parts) {
+            byte[] measurementValue = parts[1].getBytes(StandardCharsets.US_ASCII);
+
+            int value;
+            if (measurementValue[0] == '-') {
+                if (measurementValue.length == 4) {
+                    value = -Character.getNumericValue(measurementValue[1]) * 10 +
+                            Character.getNumericValue(measurementValue[3]);
+                } else {
+                    value = -Character.getNumericValue(measurementValue[1]) * 100 +
+                            Character.getNumericValue(measurementValue[2]) * 10 +
+                            Character.getNumericValue(measurementValue[4]);
+                }
+            } else {
+                if (measurementValue.length == 3) {
+                    value = Character.getNumericValue(measurementValue[0]) * 10 +
+                            Character.getNumericValue(measurementValue[2]);
+                } else {
+                    value = Character.getNumericValue(measurementValue[0]) * 100 +
+                            Character.getNumericValue(measurementValue[1]) * 10 +
+                            Character.getNumericValue(measurementValue[3]);
+                }
+            }
+
+            return new Measurement(parts[0], value);
         }
     }
 
@@ -60,74 +102,74 @@ public class CalculateAverage_slovdahl {
     public static void main(String[] args) throws IOException {
         // [station name max length 100];[temp max length 5] = 106 max per line
 
-        List<Measurement> measurements;
-        if (args[0].equals("ffm")) {
-            measurements = new ArrayList<>();
-            try (Arena arena = Arena.ofConfined();
-                    FileChannel channel = FileChannel.open(Paths.get(FILE), StandardOpenOption.READ)) {
+        List<Measurement> measurements = new ArrayList<>();
+        try (Arena arena = Arena.ofConfined();
+                FileChannel channel = FileChannel.open(Paths.get(FILE), StandardOpenOption.READ)) {
 
-                long size = channel.size();
-                // int sliceSize = 8;
-                // int sliceSize = 112; // 22-23 s
-                int sliceSize = 1024;
-                // int sliceSize = 96;
-                // int sliceSize = 224;
-                long position = 0;
-                MemorySegment segment = channel.map(FileChannel.MapMode.READ_ONLY, 0, size, arena);
+            long size = channel.size();
+            int sliceSize = 1048576;
+            long position = 0;
 
-                while (position < size) {
-                    long thisSliceSize = Math.min(sliceSize, size - position);
-                    byte[] array = segment.asSlice(position, thisSliceSize).toArray(ValueLayout.JAVA_BYTE);
+            byte[] array = new byte[sliceSize];
+            MemorySegment bufferSegment = MemorySegment.ofArray(array);
 
-                    if (array.length % 8 != 0) {
-                        byte[] paddedArray = new byte[((array.length / 8) + 1) * 8];
-                        System.arraycopy(array, 0, paddedArray, 0, array.length);
-                        array = paddedArray;
-                    }
+            MemorySegment mappedFile = channel.map(FileChannel.MapMode.READ_ONLY, 0, size, arena);
 
-                    int newlinePosition = 0;
-                    int startOffset = 0;
-                    int swarOffset = 0;
-                    while (true) {
-                        int eolPosition = swar(array, NEWLINE_PATTERN, swarOffset);
-                        if (eolPosition < 0) {
-                            break;
-                        }
-                        newlinePosition = eolPosition;
+            while (position < size) {
+                long thisSliceSize = Math.min(sliceSize, size - position);
 
-                        int semicolonPosition = swar(array, SEMICOLON_PATTERN, swarOffset);
-                        if (semicolonPosition < 0) {
-                            throw new IllegalStateException();
-                        }
+                MemorySegment.copy(
+                        mappedFile,
+                        ValueLayout.JAVA_BYTE,
+                        position,
+                        bufferSegment,
+                        ValueLayout.JAVA_BYTE,
+                        0,
+                        thisSliceSize);
 
-                        byte[] temperatureArray = new byte[newlinePosition - semicolonPosition - 1];
-                        System.arraycopy(array, semicolonPosition + 1, temperatureArray, 0, newlinePosition - semicolonPosition - 1);
-
-                        Measurement m = new Measurement(
-                                new String(array, startOffset, semicolonPosition - startOffset),
-                                // TODO: parse and store as int
-                                Double.parseDouble(new String(temperatureArray)));
-
-                        measurements.add(m);
-
-                        array[semicolonPosition] = (byte) 0;
-                        array[newlinePosition] = (byte) 0;
-
-                        startOffset = newlinePosition + 1;
-                        swarOffset = (newlinePosition / Long.BYTES) * Long.BYTES;
-                    }
-
-                    position += newlinePosition + 1;
+                if (thisSliceSize % 8 != 0) {
+                    bufferSegment
+                            .asSlice(thisSliceSize)
+                            .fill((byte) 0);
                 }
+
+                int newlinePosition = 0;
+                int startOffset = 0;
+                int swarOffset = 0;
+                while (true) {
+                    // TODO: support SWAR for MemorySegment?
+                    int eolPosition = swar(array, NEWLINE_PATTERN, swarOffset);
+                    if (eolPosition < 0) {
+                        break;
+                    }
+                    newlinePosition = eolPosition;
+
+                    int semicolonPosition = swar(array, SEMICOLON_PATTERN, swarOffset);
+                    if (semicolonPosition < 0) {
+                        throw new IllegalStateException();
+                    }
+
+                    byte[] temperatureArray = new byte[newlinePosition - semicolonPosition - 1];
+                    System.arraycopy(array, semicolonPosition + 1, temperatureArray, 0, newlinePosition - semicolonPosition - 1);
+
+                    // Station station = new Station(bufferSegment.asSlice(startOffset, semicolonPosition - startOffset).toArray(ValueLayout.JAVA_BYTE));
+
+                    Measurement m = new Measurement(
+                            new String(array, startOffset, semicolonPosition - startOffset),
+                            // TODO: parse and store as int
+                            Double.parseDouble(new String(temperatureArray)));
+
+                    measurements.add(m);
+
+                    array[semicolonPosition] = (byte) 0;
+                    array[newlinePosition] = (byte) 0;
+
+                    startOffset = newlinePosition + 1;
+                    swarOffset = (newlinePosition / Long.BYTES) * Long.BYTES;
+                }
+
+                position += newlinePosition + 1;
             }
-        }
-        else {
-            measurements = Files.lines(Paths.get(FILE))
-                    .map(l -> {
-                        String[] split = l.split(";");
-                        return new Measurement(split[0], Double.parseDouble(split[1]));
-                    })
-                    .toList();
         }
 
         System.out.println("Size: " + measurements.size());
