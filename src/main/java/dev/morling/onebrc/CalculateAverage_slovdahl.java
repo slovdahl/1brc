@@ -26,13 +26,13 @@ import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
+import java.util.*;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+
+import static java.util.stream.Collectors.*;
 
 public class CalculateAverage_slovdahl {
 
@@ -42,22 +42,137 @@ public class CalculateAverage_slovdahl {
     private static final long SEMICOLON_PATTERN = compilePattern((byte) ';');
     private static final VarHandle TO_LONG = MethodHandles.byteArrayViewVarHandle(long[].class, ByteOrder.LITTLE_ENDIAN);
 
-    private record Station(byte[] name) {
-        @Override
-        public boolean equals(Object o) {
-            if (this == o) {
-                return true;
-            }
-            if (o == null || getClass() != o.getClass()) {
-                return false;
-            }
-            Station station = (Station) o;
-            return Arrays.equals(name, station.name);
-        }
+    public static void main(String[] args) throws IOException, ExecutionException, InterruptedException {
+        int segments = Runtime.getRuntime().availableProcessors() / 2;
+        System.out.println("Segments: " + segments);
 
-        @Override
-        public int hashCode() {
-            return Arrays.hashCode(name);
+        try (Arena arena = Arena.ofShared();
+                FileChannel channel = FileChannel.open(Paths.get(FILE), StandardOpenOption.READ);
+                ExecutorService executor = Executors.newThreadPerTaskExecutor(Executors.defaultThreadFactory())) {
+
+            long size = channel.size();
+            long idealSegmentSize = size / segments;
+            MemorySegment mappedFile = channel.map(FileChannel.MapMode.READ_ONLY, 0, size, arena);
+            List<Future<Map<String, MeasurementAggregator>>> futures = new ArrayList<>(segments);
+
+            long segmentStart = 0;
+            for (int i = 1; i <= segments; i++) {
+                long actualSegmentOffset = idealSegmentSize * i;
+
+                while (actualSegmentOffset < size && mappedFile.get(ValueLayout.JAVA_BYTE, actualSegmentOffset) != (byte) '\n') {
+                    actualSegmentOffset++;
+                }
+
+                long end = actualSegmentOffset - segmentStart;
+                if (segmentStart + actualSegmentOffset - segmentStart + 1 < size) {
+                    end += 1;
+                }
+
+                MemorySegment segment = mappedFile.asSlice(segmentStart, end);
+                segmentStart = actualSegmentOffset + 1;
+
+                futures.add(executor.submit(() -> {
+                    int sliceSize = 1048576;
+                    byte[] array = new byte[sliceSize];
+                    MemorySegment bufferSegment = MemorySegment.ofArray(array);
+
+                    long position = 0;
+                    long segmentSize = segment.byteSize();
+                    Map<String, MeasurementAggregator> measurementAggregator = new HashMap<>();
+
+                    while (position < segmentSize) {
+                        long thisSliceSize = Math.min(sliceSize, segmentSize - position);
+
+                        MemorySegment.copy(
+                                segment,
+                                ValueLayout.JAVA_BYTE,
+                                position,
+                                bufferSegment,
+                                ValueLayout.JAVA_BYTE,
+                                0,
+                                thisSliceSize);
+
+                        if (thisSliceSize % 8 != 0) {
+                            bufferSegment
+                                    .asSlice(thisSliceSize)
+                                    .fill((byte) 0);
+                        }
+
+                        int newlinePosition = 0;
+                        int startOffset = 0;
+                        int swarOffset = 0;
+                        while (true) {
+                            int eolPosition = swar(array, NEWLINE_PATTERN, swarOffset);
+                            if (eolPosition < 0) {
+                                break;
+                            }
+                            newlinePosition = eolPosition;
+
+                            int semicolonPosition = swar(array, SEMICOLON_PATTERN, swarOffset);
+                            if (semicolonPosition < 0) {
+                                throw new IllegalStateException();
+                            }
+
+                            byte[] temperatureArray = new byte[newlinePosition - semicolonPosition - 1];
+                            System.arraycopy(array, semicolonPosition + 1, temperatureArray, 0, newlinePosition - semicolonPosition - 1);
+
+                            String station = new String(array, startOffset, semicolonPosition - startOffset);
+
+                            // TODO: parse as int and divide with 10
+                            double value = Double.parseDouble(new String(temperatureArray));
+
+                            MeasurementAggregator agg = measurementAggregator.computeIfAbsent(station, s -> new MeasurementAggregator());
+
+                            agg.min = Math.min(agg.min, value);
+                            agg.max = Math.max(agg.max, value);
+                            agg.sum += value;
+                            agg.count++;
+
+                            array[semicolonPosition] = (byte) 0;
+                            array[newlinePosition] = (byte) 0;
+
+                            startOffset = newlinePosition + 1;
+                            swarOffset = (newlinePosition / Long.BYTES) * Long.BYTES;
+                        }
+
+                        position += newlinePosition + 1;
+                    }
+
+                    return measurementAggregator;
+                }));
+            }
+
+            TreeMap<String, ResultRow> result = futures.stream()
+                    .map(f -> {
+                        try {
+                            return f.get();
+                        }
+                        catch (InterruptedException | ExecutionException e) {
+                            throw new RuntimeException(e);
+                        }
+                    })
+                    .flatMap(m -> m.entrySet().stream())
+                    .collect(groupingBy(
+                            Map.Entry::getKey,
+                            TreeMap::new,
+                            collectingAndThen(
+                                    reducing(
+                                            new MeasurementAggregator(),
+                                            Map.Entry::getValue,
+                                            (agg1, agg2) -> {
+                                                MeasurementAggregator res = new MeasurementAggregator();
+                                                res.min = Math.min(agg1.min, agg2.min);
+                                                res.max = Math.max(agg1.max, agg2.max);
+                                                res.sum = agg1.sum + agg2.sum;
+                                                res.count = agg1.count + agg2.count;
+
+                                                return res;
+                                            }),
+                                    agg -> new ResultRow(agg.min, (Math.round(agg.sum * 10.0) / 10.0) / agg.count, agg.max))));
+
+            System.out.println(result);
+
+            executor.shutdownNow();
         }
     }
 
@@ -100,161 +215,6 @@ public class CalculateAverage_slovdahl {
         private double round(double value) {
             return Math.round(value * 10.0) / 10.0;
         }
-    }
-
-    public static void main(String[] args) throws IOException, ExecutionException, InterruptedException {
-        // [station name max length 100];[temp max length 5] = 106 max per line
-
-        int segments = Runtime.getRuntime().availableProcessors() / 2;
-        System.out.println("Segments: " + segments);
-
-        try (Arena arena = Arena.ofShared();
-                FileChannel channel = FileChannel.open(Paths.get(FILE), StandardOpenOption.READ);
-                ExecutorService executor = Executors.newThreadPerTaskExecutor(Executors.defaultThreadFactory())) {
-
-            long size = channel.size();
-            long idealSegmentSize = size / segments;
-            MemorySegment mappedFile = channel.map(FileChannel.MapMode.READ_ONLY, 0, size, arena);
-            List<Future<List<Measurement>>> futures = new ArrayList<>(segments);
-
-            long segmentStart = 0;
-            for (int i = 1; i <= segments; i++) {
-                long actualSegmentOffset = idealSegmentSize * i;
-
-                while (actualSegmentOffset < size && mappedFile.get(ValueLayout.JAVA_BYTE, actualSegmentOffset) != (byte) '\n') {
-                    actualSegmentOffset++;
-                }
-
-                long end = actualSegmentOffset - segmentStart;
-                if (segmentStart + actualSegmentOffset - segmentStart + 1 < size) {
-                    end += 1;
-                }
-
-                MemorySegment segment = mappedFile.asSlice(segmentStart, end);
-                segmentStart = actualSegmentOffset + 1;
-
-                futures.add(executor.submit(() -> {
-                    int sliceSize = 1048576;
-                    byte[] array = new byte[sliceSize];
-                    MemorySegment bufferSegment = MemorySegment.ofArray(array);
-
-                    long position = 0;
-                    long segmentSize = segment.byteSize();
-                    List<Measurement> measurements = new ArrayList<>();
-
-                    while (position < segmentSize) {
-                        long thisSliceSize = Math.min(sliceSize, segmentSize - position);
-
-                        MemorySegment.copy(
-                                segment,
-                                ValueLayout.JAVA_BYTE,
-                                position,
-                                bufferSegment,
-                                ValueLayout.JAVA_BYTE,
-                                0,
-                                thisSliceSize);
-
-                        if (thisSliceSize % 8 != 0) {
-                            bufferSegment
-                                    .asSlice(thisSliceSize)
-                                    .fill((byte) 0);
-                        }
-
-                        int newlinePosition = 0;
-                        int startOffset = 0;
-                        int swarOffset = 0;
-                        while (true) {
-                            // TODO: support SWAR for MemorySegment?
-                            int eolPosition = swar(array, NEWLINE_PATTERN, swarOffset);
-                            if (eolPosition < 0) {
-                                break;
-                            }
-                            newlinePosition = eolPosition;
-
-                            int semicolonPosition = swar(array, SEMICOLON_PATTERN, swarOffset);
-                            if (semicolonPosition < 0) {
-                                throw new IllegalStateException();
-                            }
-
-                            byte[] temperatureArray = new byte[newlinePosition - semicolonPosition - 1];
-                            System.arraycopy(array, semicolonPosition + 1, temperatureArray, 0, newlinePosition - semicolonPosition - 1);
-
-                            // Station station = new Station(bufferSegment.asSlice(startOffset, semicolonPosition - startOffset).toArray(ValueLayout.JAVA_BYTE));
-
-                            Measurement m = new Measurement(
-                                    new String(array, startOffset, semicolonPosition - startOffset),
-                                    // TODO: parse and store as int
-                                    Double.parseDouble(new String(temperatureArray)));
-
-                            measurements.add(m);
-
-                            array[semicolonPosition] = (byte) 0;
-                            array[newlinePosition] = (byte) 0;
-
-                            startOffset = newlinePosition + 1;
-                            swarOffset = (newlinePosition / Long.BYTES) * Long.BYTES;
-                        }
-
-                        position += newlinePosition + 1;
-                    }
-
-                    return measurements;
-                }));
-            }
-
-            System.out.println("Size: " + futures.stream()
-                    .map(f -> {
-                        try {
-                            return f.get();
-                        }
-                        catch (InterruptedException | ExecutionException e) {
-                            throw new RuntimeException(e);
-                        }
-                    })
-                    .mapToLong(List::size)
-                    .sum());
-
-            executor.shutdownNow();
-        }
-
-        /*
-         * Map<String, ResultRow> unsortedResults = Files.lines(Paths.get(FILE))
-         * .map(l -> {
-         * int position = swar(l.getBytes(StandardCharsets.US_ASCII), SEMICOLON_PATTERN);
-         * String station = l.substring(0, position);
-         * String valueString = l.substring(position + 1);
-         * double value = Double.parseDouble(valueString);
-         * return new Measurement(station, value);
-         * })
-         * .collect(
-         * groupingBy(
-         * Measurement::station,
-         * Collector.of(
-         * MeasurementAggregator::new,
-         * (a, m) -> {
-         * a.min = Math.min(a.min, m.value);
-         * a.max = Math.max(a.max, m.value);
-         * a.sum += m.value;
-         * a.count++;
-         * },
-         * (agg1, agg2) -> {
-         * var res = new MeasurementAggregator();
-         * res.min = Math.min(agg1.min, agg2.min);
-         * res.max = Math.max(agg1.max, agg2.max);
-         * res.sum = agg1.sum + agg2.sum;
-         * res.count = agg1.count + agg2.count;
-         *
-         * return res;
-         * },
-         * agg -> new ResultRow(agg.min, (Math.round(agg.sum * 10.0) / 10.0) / agg.count, agg.max)
-         * )
-         * )
-         * );
-         *
-         * Map<String, ResultRow> measurements = new TreeMap<>(unsortedResults);
-         *
-         * System.out.println(measurements);
-         */
     }
 
     private static class MeasurementAggregator {
