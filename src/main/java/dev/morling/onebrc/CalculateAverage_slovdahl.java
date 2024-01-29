@@ -43,8 +43,7 @@ public class CalculateAverage_slovdahl {
     private static final VarHandle TO_LONG = MethodHandles.byteArrayViewVarHandle(long[].class, ByteOrder.LITTLE_ENDIAN);
 
     public static void main(String[] args) throws IOException, ExecutionException, InterruptedException {
-        int segments = Runtime.getRuntime().availableProcessors() / 2;
-        System.out.println("Segments: " + segments);
+        int segments = Runtime.getRuntime().availableProcessors() - 1;
 
         try (Arena arena = Arena.ofShared();
                 FileChannel channel = FileChannel.open(Paths.get(FILE), StandardOpenOption.READ);
@@ -53,7 +52,7 @@ public class CalculateAverage_slovdahl {
             long size = channel.size();
             long idealSegmentSize = size / segments;
             MemorySegment mappedFile = channel.map(FileChannel.MapMode.READ_ONLY, 0, size, arena);
-            List<Future<Map<String, MeasurementAggregator>>> futures = new ArrayList<>(segments);
+            var futures = new ArrayList<Future<Map<Station, MeasurementAggregator>>>(segments);
 
             long segmentStart = 0;
             for (int i = 1; i <= segments; i++) {
@@ -78,7 +77,7 @@ public class CalculateAverage_slovdahl {
 
                     long position = 0;
                     long segmentSize = segment.byteSize();
-                    Map<String, MeasurementAggregator> measurementAggregator = new HashMap<>();
+                    Map<Station, MeasurementAggregator> measurementAggregator = new HashMap<>();
 
                     while (position < segmentSize) {
                         long thisSliceSize = Math.min(sliceSize, segmentSize - position);
@@ -113,21 +112,47 @@ public class CalculateAverage_slovdahl {
                                 throw new IllegalStateException();
                             }
 
+                            byte[] nameArray = new byte[semicolonPosition - startOffset];
+                            System.arraycopy(array, startOffset, nameArray, 0, semicolonPosition - startOffset);
+                            Station station = new Station(nameArray);
+
                             byte[] temperatureArray = new byte[newlinePosition - semicolonPosition - 1];
                             System.arraycopy(array, semicolonPosition + 1, temperatureArray, 0, newlinePosition - semicolonPosition - 1);
 
-                            String station = new String(array, startOffset, semicolonPosition - startOffset);
+                            int intValue;
+                            if (temperatureArray[0] == '-') {
+                                if (temperatureArray.length == 4) {
+                                    intValue = -(temperatureArray[1] - 48) * 10 +
+                                            (temperatureArray[3] - 48);
+                                }
+                                else {
+                                    intValue = -(temperatureArray[1] - 48) * 100 +
+                                            (temperatureArray[2] - 48) * 10 +
+                                            (temperatureArray[4] - 48);
+                                }
+                            }
+                            else {
+                                if (temperatureArray.length == 3) {
+                                    intValue = (temperatureArray[0] - 48) * 10 +
+                                            (temperatureArray[2] - 48);
+                                }
+                                else {
+                                    intValue = (temperatureArray[0] - 48) * 100 +
+                                            (temperatureArray[1] - 48) * 10 +
+                                            (temperatureArray[3] - 48);
+                                }
+                            }
 
-                            // TODO: parse as int and divide with 10
-                            double value = Double.parseDouble(new String(temperatureArray));
+                            double temperature = intValue / 10.0;
 
                             MeasurementAggregator agg = measurementAggregator.computeIfAbsent(station, s -> new MeasurementAggregator());
 
-                            agg.min = Math.min(agg.min, value);
-                            agg.max = Math.max(agg.max, value);
-                            agg.sum += value;
+                            agg.min = Math.min(agg.min, temperature);
+                            agg.max = Math.max(agg.max, temperature);
+                            agg.sum += temperature;
                             agg.count++;
 
+                            // Make sure the next iteration won't find the same delimiters.
                             array[semicolonPosition] = (byte) 0;
                             array[newlinePosition] = (byte) 0;
 
@@ -153,7 +178,7 @@ public class CalculateAverage_slovdahl {
                     })
                     .flatMap(m -> m.entrySet().stream())
                     .collect(groupingBy(
-                            Map.Entry::getKey,
+                            e -> new String(e.getKey().name()),
                             TreeMap::new,
                             collectingAndThen(
                                     reducing(
@@ -174,54 +199,6 @@ public class CalculateAverage_slovdahl {
 
             executor.shutdownNow();
         }
-    }
-
-    private record Measurement(String station, double value) {
-        static Measurement of(String[] parts) {
-            byte[] measurementValue = parts[1].getBytes(StandardCharsets.US_ASCII);
-
-            int value;
-            if (measurementValue[0] == '-') {
-                if (measurementValue.length == 4) {
-                    value = -Character.getNumericValue(measurementValue[1]) * 10 +
-                            Character.getNumericValue(measurementValue[3]);
-                } else {
-                    value = -Character.getNumericValue(measurementValue[1]) * 100 +
-                            Character.getNumericValue(measurementValue[2]) * 10 +
-                            Character.getNumericValue(measurementValue[4]);
-                }
-            } else {
-                if (measurementValue.length == 3) {
-                    value = Character.getNumericValue(measurementValue[0]) * 10 +
-                            Character.getNumericValue(measurementValue[2]);
-                } else {
-                    value = Character.getNumericValue(measurementValue[0]) * 100 +
-                            Character.getNumericValue(measurementValue[1]) * 10 +
-                            Character.getNumericValue(measurementValue[3]);
-                }
-            }
-
-            return new Measurement(parts[0], value);
-        }
-    }
-
-    private record ResultRow(double min, double mean, double max) {
-
-        @Override
-        public String toString() {
-            return round(min) + "/" + round(mean) + "/" + round(max);
-        }
-
-        private double round(double value) {
-            return Math.round(value * 10.0) / 10.0;
-        }
-    }
-
-    private static class MeasurementAggregator {
-        private double min = Double.POSITIVE_INFINITY;
-        private double max = Double.NEGATIVE_INFINITY;
-        private double sum;
-        private long count;
     }
 
     private static long compilePattern(byte byteToFind) {
@@ -257,5 +234,47 @@ public class CalculateAverage_slovdahl {
 
     private static long getWord(byte[] data, int index) {
         return (long) TO_LONG.get(data, index);
+    }
+
+    private record Station(byte[] name, int hash) {
+        private Station(byte[] name) {
+            this(name, Arrays.hashCode(name));
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) {
+                return true;
+            }
+            if (o == null || getClass() != o.getClass()) {
+                return false;
+            }
+            Station station = (Station) o;
+            return Arrays.equals(name, station.name);
+        }
+
+        @Override
+        public int hashCode() {
+            return hash;
+        }
+    }
+
+    private static class MeasurementAggregator {
+        private double min = Double.POSITIVE_INFINITY;
+        private double max = Double.NEGATIVE_INFINITY;
+        private double sum;
+        private long count;
+    }
+
+    private record ResultRow(double min, double mean, double max) {
+
+        @Override
+        public String toString() {
+            return round(min) + "/" + round(mean) + "/" + round(max);
+        }
+
+        private double round(double value) {
+            return Math.round(value * 10.0) / 10.0;
+        }
     }
 }

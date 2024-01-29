@@ -15,11 +15,5 @@
 #  limitations under the License.
 #
 
-if [[ -f target/CalculateAverage_slovdahl_image ]]; then
-    echo "Graal"
-    target/CalculateAverage_slovdahl_image
-else
-    JAVA_OPTS="-Xmx10g -Xms10g --enable-preview"
-    echo "JDK"
-    java $JAVA_OPTS --class-path target/average-1.0.0-SNAPSHOT.jar dev.morling.onebrc.CalculateAverage_slovdahl
-fi
+JAVA_OPTS="-Xmx8g -Xms8g --enable-preview"
+java $JAVA_OPTS --class-path target/average-1.0.0-SNAPSHOT.jar dev.morling.onebrc.CalculateAverage_slovdahl

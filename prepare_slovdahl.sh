@@ -18,15 +18,5 @@
 # Uncomment below to use sdk
 source "$HOME/.sdkman/bin/sdkman-init.sh"
 
-if [ "$1" = "graal" ]; then
-    sdk use java 21.0.2-graal 1>&2 > /dev/null
-    NATIVE_IMAGE_OPTS="-dsa -O3 -march=native -H:-GenLoopSafepoints --enable-preview --initialize-at-build-time=dev.morling.onebrc.CalculateAverage_slovdahl"
-    native-image $NATIVE_IMAGE_OPTS -cp target/average-1.0.0-SNAPSHOT.jar -o target/CalculateAverage_slovdahl_image dev.morling.onebrc.CalculateAverage_slovdahl
-elif [ "$1" = "jdk" ]; then
-    rm -f target/CalculateAverage_slovdahl_image
-    sdk use java 21.0.2-tem 1>&2 > /dev/null
-    ./mvnw verify
-else
-    echo "Specify either graal or jdk"
-    exit 1
-fi
+sdk use java 21.0.2-tem 1>&2 > /dev/null
+./mvnw verify
