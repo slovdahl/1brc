@@ -29,6 +29,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.StringJoiner;
 import java.util.TreeMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -46,6 +47,7 @@ public class CalculateAverage_slovdahl {
     private static final long NEWLINE_PATTERN = compilePattern((byte) '\n');
     private static final long SEMICOLON_PATTERN = compilePattern((byte) ';');
     private static final VarHandle TO_LONG = MethodHandles.byteArrayViewVarHandle(long[].class, ByteOrder.LITTLE_ENDIAN);
+    private static final int SLICE_SIZE = 1_048_576;
 
     public static void main(String[] args) throws IOException, ExecutionException, InterruptedException {
         int segments = Runtime.getRuntime().availableProcessors() - 1;
@@ -55,7 +57,12 @@ public class CalculateAverage_slovdahl {
                 ExecutorService executor = Executors.newThreadPerTaskExecutor(Executors.defaultThreadFactory())) {
 
             long size = channel.size();
+            if (size < SLICE_SIZE) {
+                segments = 1;
+            }
+
             long idealSegmentSize = size / segments;
+
             MemorySegment mappedFile = channel.map(FileChannel.MapMode.READ_ONLY, 0, size, arena);
             var futures = new ArrayList<Future<Map<Station, MeasurementAggregator>>>(segments);
 
@@ -76,8 +83,7 @@ public class CalculateAverage_slovdahl {
                 segmentStart = actualSegmentOffset + 1;
 
                 futures.add(executor.submit(() -> {
-                    int sliceSize = 1048576;
-                    byte[] array = new byte[sliceSize];
+                    byte[] array = new byte[SLICE_SIZE];
                     MemorySegment bufferSegment = MemorySegment.ofArray(array);
 
                     long position = 0;
@@ -85,7 +91,7 @@ public class CalculateAverage_slovdahl {
                     Map<Station, MeasurementAggregator> map = HashMap.newHashMap(10_000);
 
                     while (position < segmentSize) {
-                        long thisSliceSize = Math.min(sliceSize, segmentSize - position);
+                        long thisSliceSize = Math.min(SLICE_SIZE, segmentSize - position);
 
                         MemorySegment.copy(
                                 segment,
@@ -115,9 +121,16 @@ public class CalculateAverage_slovdahl {
 
                             int eolPosition = swar(array, NEWLINE_PATTERN, swarOffset);
                             if (eolPosition < 0) {
-                                break;
+                                if (semicolonPosition < segmentSize - 4) {
+                                    break;
+                                }
+                                else {
+                                    newlinePosition = (int) segmentSize;
+                                }
                             }
-                            newlinePosition = eolPosition;
+                            else {
+                                newlinePosition = eolPosition;
+                            }
 
                             byte[] nameArray = new byte[semicolonPosition - startOffset];
                             System.arraycopy(array, startOffset, nameArray, 0, semicolonPosition - startOffset);
@@ -129,13 +142,13 @@ public class CalculateAverage_slovdahl {
                             int temperatureIntValue;
                             if (array[temperatureStart] == '-') {
                                 if (temperatureLength == 4) {
-                                    temperatureIntValue = -(array[temperatureStart + 1] - 48) * 10 +
-                                            (array[temperatureStart + 3] - 48);
+                                    temperatureIntValue = -1 * ((array[temperatureStart + 1] - 48) * 10 +
+                                            (array[temperatureStart + 3] - 48));
                                 }
                                 else {
-                                    temperatureIntValue = -(array[temperatureStart + 1] - 48) * 100 +
+                                    temperatureIntValue = -1 * ((array[temperatureStart + 1] - 48) * 100 +
                                             (array[temperatureStart + 2] - 48) * 10 +
-                                            (array[temperatureStart + 4] - 48);
+                                            (array[temperatureStart + 4] - 48));
                                 }
                             }
                             else {
@@ -166,7 +179,7 @@ public class CalculateAverage_slovdahl {
                             array[newlinePosition] = (byte) 0;
 
                             startOffset = newlinePosition + 1;
-                            swarOffset = (newlinePosition / Long.BYTES) * Long.BYTES;
+                            swarOffset = (startOffset / Long.BYTES) * Long.BYTES;
                         }
 
                         position += newlinePosition + 1;
@@ -225,6 +238,7 @@ public class CalculateAverage_slovdahl {
                 | (pattern << 56);
     }
 
+    // Based on Richard Startin's blog post: https://richardstartin.github.io/posts/finding-bytes
     private static int swar(byte[] data, long pattern, int offset) {
         while (offset < data.length) {
             int index = firstInstance(getWord(data, offset), pattern);
@@ -268,6 +282,14 @@ public class CalculateAverage_slovdahl {
         @Override
         public int hashCode() {
             return hash;
+        }
+
+        @Override
+        public String toString() {
+            return new StringJoiner(", ", Station.class.getSimpleName() + "[", "]")
+                    .add("name=" + new String(name))
+                    .add("hash=" + hash)
+                    .toString();
         }
     }
 
