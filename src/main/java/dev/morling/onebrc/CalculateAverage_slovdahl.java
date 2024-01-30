@@ -119,9 +119,13 @@ public class CalculateAverage_slovdahl {
                             }
                             newlinePosition = eolPosition;
 
-                            byte[] nameArray = new byte[semicolonPosition - startOffset];
-                            System.arraycopy(array, startOffset, nameArray, 0, semicolonPosition - startOffset);
-                            Station station = new Station(nameArray);
+                            int nameLength = semicolonPosition - startOffset;
+                            int nameHash = 0;
+                            for (int j = 0; j < nameLength; j++) {
+                                nameHash = 31 * nameHash + array[startOffset + j];
+                            }
+
+                            Station station = new Station(array, startOffset, nameLength, nameHash);
 
                             int temperatureStart = semicolonPosition + 1;
                             int temperatureLength = newlinePosition - semicolonPosition - 1;
@@ -187,7 +191,7 @@ public class CalculateAverage_slovdahl {
                     })
                     .flatMap(m -> m.entrySet().stream())
                     .collect(groupingBy(
-                            e -> new String(e.getKey().name()),
+                            e -> new String(e.getKey().getName()),
                             TreeMap::new,
                             collectingAndThen(
                                     reducing(
@@ -248,9 +252,31 @@ public class CalculateAverage_slovdahl {
         return (long) TO_LONG.get(data, index);
     }
 
-    private record Station(byte[] name, int hash) {
-        private Station(byte[] name) {
-            this(name, Arrays.hashCode(name));
+    private static class Station {
+        private byte[] sourceArray;
+        private final int startIndex;
+        private final int length;
+        private final int hash;
+        private byte[] name;
+
+        private Station(byte[] sourceArray, int startIndex, int length, int hash) {
+            this.sourceArray = sourceArray;
+            this.startIndex = startIndex;
+            this.length = length;
+            this.hash = hash;
+        }
+
+        public byte[] getName() {
+            createName();
+            return name;
+        }
+
+        private void createName() {
+            if (name == null) {
+                name = new byte[length];
+                System.arraycopy(sourceArray, startIndex, name, 0, length);
+                sourceArray = null;
+            }
         }
 
         @Override
@@ -258,11 +284,8 @@ public class CalculateAverage_slovdahl {
             if (this == o) {
                 return true;
             }
-            if (o == null || getClass() != o.getClass()) {
-                return false;
-            }
             Station station = (Station) o;
-            return Arrays.equals(name, station.name);
+            return Arrays.equals(getName(), station.getName());
         }
 
         @Override
