@@ -77,7 +77,7 @@ public class CalculateAverage_slovdahl {
 
                     long position = 0;
                     long segmentSize = segment.byteSize();
-                    Map<Station, MeasurementAggregator> measurementAggregator = new HashMap<>();
+                    Map<Station, MeasurementAggregator> measurementAggregator = HashMap.newHashMap(10_000);
 
                     while (position < segmentSize) {
                         long thisSliceSize = Math.min(sliceSize, segmentSize - position);
@@ -101,51 +101,57 @@ public class CalculateAverage_slovdahl {
                         int startOffset = 0;
                         int swarOffset = 0;
                         while (true) {
+                            int semicolonPosition = swar(array, SEMICOLON_PATTERN, swarOffset);
+                            if (semicolonPosition < 0) {
+                                break;
+                            }
+
+                            swarOffset = (semicolonPosition / Long.BYTES) * Long.BYTES;
+
                             int eolPosition = swar(array, NEWLINE_PATTERN, swarOffset);
                             if (eolPosition < 0) {
                                 break;
                             }
                             newlinePosition = eolPosition;
 
-                            int semicolonPosition = swar(array, SEMICOLON_PATTERN, swarOffset);
-                            if (semicolonPosition < 0) {
-                                throw new IllegalStateException();
-                            }
-
                             byte[] nameArray = new byte[semicolonPosition - startOffset];
                             System.arraycopy(array, startOffset, nameArray, 0, semicolonPosition - startOffset);
                             Station station = new Station(nameArray);
 
-                            byte[] temperatureArray = new byte[newlinePosition - semicolonPosition - 1];
-                            System.arraycopy(array, semicolonPosition + 1, temperatureArray, 0, newlinePosition - semicolonPosition - 1);
+                            int temperatureStart = semicolonPosition + 1;
+                            int temperatureLength = newlinePosition - semicolonPosition - 1;
 
                             int intValue;
-                            if (temperatureArray[0] == '-') {
-                                if (temperatureArray.length == 4) {
-                                    intValue = -(temperatureArray[1] - 48) * 10 +
-                                            (temperatureArray[3] - 48);
+                            if (array[temperatureStart] == '-') {
+                                if (temperatureLength == 4) {
+                                    intValue = -(array[temperatureStart + 1] - 48) * 10 +
+                                            (array[temperatureStart + 3] - 48);
                                 }
                                 else {
-                                    intValue = -(temperatureArray[1] - 48) * 100 +
-                                            (temperatureArray[2] - 48) * 10 +
-                                            (temperatureArray[4] - 48);
+                                    intValue = -(array[temperatureStart + 1] - 48) * 100 +
+                                            (array[temperatureStart + 2] - 48) * 10 +
+                                            (array[temperatureStart + 4] - 48);
                                 }
                             }
                             else {
-                                if (temperatureArray.length == 3) {
-                                    intValue = (temperatureArray[0] - 48) * 10 +
-                                            (temperatureArray[2] - 48);
+                                if (temperatureLength == 3) {
+                                    intValue = (array[temperatureStart] - 48) * 10 +
+                                            (array[temperatureStart + 2] - 48);
                                 }
                                 else {
-                                    intValue = (temperatureArray[0] - 48) * 100 +
-                                            (temperatureArray[1] - 48) * 10 +
-                                            (temperatureArray[3] - 48);
+                                    intValue = (array[temperatureStart] - 48) * 100 +
+                                            (array[temperatureStart + 1] - 48) * 10 +
+                                            (array[temperatureStart + 3] - 48);
                                 }
                             }
 
                             double temperature = intValue / 10.0;
 
-                            MeasurementAggregator agg = measurementAggregator.computeIfAbsent(station, s -> new MeasurementAggregator());
+                            MeasurementAggregator agg = measurementAggregator.get(station);
+                            if (agg == null) {
+                                agg = new MeasurementAggregator();
+                                measurementAggregator.put(station, agg);
+                            }
 
                             agg.min = Math.min(agg.min, temperature);
                             agg.max = Math.max(agg.max, temperature);
