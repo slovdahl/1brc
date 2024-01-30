@@ -145,17 +145,15 @@ public class CalculateAverage_slovdahl {
                                 }
                             }
 
-                            double temperature = intValue / 10.0;
-
                             MeasurementAggregator agg = measurementAggregator.get(station);
                             if (agg == null) {
                                 agg = new MeasurementAggregator();
                                 measurementAggregator.put(station, agg);
                             }
 
-                            agg.min = Math.min(agg.min, temperature);
-                            agg.max = Math.max(agg.max, temperature);
-                            agg.sum += temperature;
+                            agg.min = Math.min(agg.min, intValue);
+                            agg.max = Math.max(agg.max, intValue);
+                            agg.sum += intValue;
                             agg.count++;
 
                             // Make sure the next iteration won't find the same delimiters.
@@ -199,7 +197,10 @@ public class CalculateAverage_slovdahl {
 
                                                 return res;
                                             }),
-                                    agg -> new ResultRow(agg.min, (Math.round(agg.sum * 10.0) / 10.0) / agg.count, agg.max))));
+                                    agg -> new ResultRow(
+                                            agg.min / 10.0,
+                                            (Math.round((agg.sum / 10.0) * 10.0) / 10.0) / agg.count,
+                                            agg.max / 10.0))));
 
             System.out.println(result);
 
@@ -266,9 +267,9 @@ public class CalculateAverage_slovdahl {
     }
 
     private static class MeasurementAggregator {
-        private double min = Double.POSITIVE_INFINITY;
-        private double max = Double.NEGATIVE_INFINITY;
-        private double sum;
+        private int min = Integer.MAX_VALUE;
+        private int max = Integer.MIN_VALUE;
+        private long sum;
         private long count;
     }
 
