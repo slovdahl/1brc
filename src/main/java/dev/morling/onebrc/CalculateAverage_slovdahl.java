@@ -23,16 +23,21 @@ import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
-import static java.util.stream.Collectors.*;
+import static java.util.stream.Collectors.collectingAndThen;
+import static java.util.stream.Collectors.groupingBy;
+import static java.util.stream.Collectors.reducing;
 
 public class CalculateAverage_slovdahl {
 
@@ -77,7 +82,7 @@ public class CalculateAverage_slovdahl {
 
                     long position = 0;
                     long segmentSize = segment.byteSize();
-                    Map<Station, MeasurementAggregator> measurementAggregator = HashMap.newHashMap(10_000);
+                    Map<Station, MeasurementAggregator> map = HashMap.newHashMap(10_000);
 
                     while (position < segmentSize) {
                         long thisSliceSize = Math.min(sliceSize, segmentSize - position);
@@ -145,10 +150,10 @@ public class CalculateAverage_slovdahl {
                                 }
                             }
 
-                            MeasurementAggregator agg = measurementAggregator.get(station);
+                            MeasurementAggregator agg = map.get(station);
                             if (agg == null) {
                                 agg = new MeasurementAggregator();
-                                measurementAggregator.put(station, agg);
+                                map.put(station, agg);
                             }
 
                             agg.min = Math.min(agg.min, intValue);
@@ -167,7 +172,7 @@ public class CalculateAverage_slovdahl {
                         position += newlinePosition + 1;
                     }
 
-                    return measurementAggregator;
+                    return map;
                 }));
             }
 
