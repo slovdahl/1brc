@@ -110,16 +110,18 @@ public class CalculateAverage_slovdahl {
 
                         int newlinePosition = 0;
                         int startOffset = 0;
-                        int swarOffset = 0;
+                        // int swarOffset = 0;
                         while (true) {
-                            int semicolonPosition = swar(array, SEMICOLON_PATTERN, swarOffset);
+                            // int semicolonPosition = swar(array, SEMICOLON_PATTERN, swarOffset);
+                            int semicolonPosition = nextOccurrence(array, (byte) ';', startOffset);
                             if (semicolonPosition < 0) {
                                 break;
                             }
 
-                            swarOffset = (semicolonPosition / Long.BYTES) * Long.BYTES;
+                            // swarOffset = (semicolonPosition / Long.BYTES) * Long.BYTES;
 
-                            int eolPosition = swar(array, NEWLINE_PATTERN, swarOffset);
+                            // int eolPosition = swar(array, NEWLINE_PATTERN, swarOffset);
+                            int eolPosition = nextOccurrence(array, (byte) '\n', startOffset);
                             if (eolPosition < 0) {
                                 if (semicolonPosition < segmentSize - 4) {
                                     break;
@@ -179,7 +181,7 @@ public class CalculateAverage_slovdahl {
                             array[newlinePosition] = (byte) 0;
 
                             startOffset = newlinePosition + 1;
-                            swarOffset = (startOffset / Long.BYTES) * Long.BYTES;
+                            // swarOffset = (startOffset / Long.BYTES) * Long.BYTES;
                         }
 
                         position += newlinePosition + 1;
@@ -224,6 +226,16 @@ public class CalculateAverage_slovdahl {
 
             executor.shutdownNow();
         }
+    }
+
+    private static int nextOccurrence(byte[] data, byte needle, int offset) {
+        while (offset < data.length) {
+            if (data[offset] == needle) {
+                return offset;
+            }
+            offset++;
+        }
+        return -1;
     }
 
     private static long compilePattern(byte byteToFind) {
