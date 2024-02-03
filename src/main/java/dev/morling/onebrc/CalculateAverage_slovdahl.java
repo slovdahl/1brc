@@ -165,10 +165,6 @@ public class CalculateAverage_slovdahl {
                             agg.sum += temperatureIntValue;
                             agg.count++;
 
-                            // Make sure the next iteration won't find the same delimiters.
-                            array[semicolonPosition] = (byte) 0;
-                            array[newlinePosition] = (byte) 0;
-
                             startOffset = newlinePosition + 1;
                         }
 
