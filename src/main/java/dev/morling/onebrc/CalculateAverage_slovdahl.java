@@ -44,7 +44,7 @@ public class CalculateAverage_slovdahl {
     private static final int SLICE_SIZE = 1_048_576;
 
     public static void main(String[] args) throws IOException, ExecutionException, InterruptedException {
-        int segments = Runtime.getRuntime().availableProcessors() - 1;
+        int segments = Runtime.getRuntime().availableProcessors();
 
         try (Arena arena = Arena.ofShared();
                 FileChannel channel = FileChannel.open(Paths.get(FILE), StandardOpenOption.READ);
