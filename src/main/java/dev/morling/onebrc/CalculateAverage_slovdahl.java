@@ -24,14 +24,14 @@ import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.Objects;
 import java.util.StringJoiner;
 import java.util.TreeMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.stream.Stream;
 
 import static java.util.stream.Collectors.collectingAndThen;
 import static java.util.stream.Collectors.groupingBy;
@@ -58,7 +58,7 @@ public class CalculateAverage_slovdahl {
             long idealSegmentSize = size / segments;
 
             MemorySegment mappedFile = channel.map(FileChannel.MapMode.READ_ONLY, 0, size, arena);
-            var futures = new ArrayList<Future<Map<Station, MeasurementAggregator>>>(segments);
+            var futures = new ArrayList<Future<Measurements>>(segments);
 
             long segmentStart = 0;
             for (int i = 1; i <= segments; i++) {
@@ -82,7 +82,7 @@ public class CalculateAverage_slovdahl {
 
                     long position = 0;
                     long segmentSize = segment.byteSize();
-                    Map<Station, MeasurementAggregator> map = HashMap.newHashMap(10_000);
+                    Measurements map = new Measurements();
 
                     while (position < segmentSize) {
                         long thisSliceSize = Math.min(SLICE_SIZE, segmentSize - position);
@@ -156,8 +156,8 @@ public class CalculateAverage_slovdahl {
 
                             MeasurementAggregator agg = map.get(station);
                             if (agg == null) {
-                                agg = new MeasurementAggregator();
-                                map.put(station, agg);
+                                agg = new MeasurementAggregator(station);
+                                map.put(agg);
                             }
 
                             agg.min = Math.min(agg.min, temperatureIntValue);
@@ -188,16 +188,16 @@ public class CalculateAverage_slovdahl {
                             throw new RuntimeException(e);
                         }
                     })
-                    .flatMap(m -> m.entrySet().stream())
+                    .flatMap(Measurements::entries)
                     .collect(groupingBy(
-                            e -> new String(e.getKey().name()),
+                            m -> new String(m.station().name()),
                             TreeMap::new,
                             collectingAndThen(
                                     reducing(
-                                            new MeasurementAggregator(),
-                                            Map.Entry::getValue,
+                                            new MeasurementAggregator(null),
+                                            m -> m,
                                             (agg1, agg2) -> {
-                                                MeasurementAggregator res = new MeasurementAggregator();
+                                                MeasurementAggregator res = new MeasurementAggregator(agg1.station());
                                                 res.min = Math.min(agg1.min, agg2.min);
                                                 res.max = Math.max(agg1.max, agg2.max);
                                                 res.sum = agg1.sum + agg2.sum;
@@ -224,6 +224,45 @@ public class CalculateAverage_slovdahl {
             offset++;
         }
         return -1;
+    }
+
+    private static class Measurements {
+
+        private final MeasurementAggregator[] arr;
+
+        Measurements() {
+            arr = new MeasurementAggregator[10_000];
+        }
+
+        void put(MeasurementAggregator m) {
+            int index = hash(m.station);
+            while (arr[index] != null) {
+                index = (index + 1) % arr.length;
+            }
+
+            arr[index] = m;
+        }
+
+        MeasurementAggregator get(Station station) {
+            int index = hash(station);
+            MeasurementAggregator agg;
+            while ((agg = arr[index]) != null) {
+                if (station.hash == agg.station.hash && station.equals(agg.station)) {
+                    return agg;
+                }
+                index = (index + 1) % arr.length;
+            }
+            return null;
+        }
+
+        Stream<MeasurementAggregator> entries() {
+            return Arrays.stream(arr)
+                    .filter(Objects::nonNull);
+        }
+
+        private int hash(Station station) {
+            return (station.hashCode() & 0x7fffffff) % arr.length;
+        }
     }
 
     private record Station(byte[] name, int hash) {
@@ -258,10 +297,21 @@ public class CalculateAverage_slovdahl {
     }
 
     private static class MeasurementAggregator {
-        private int min = Integer.MAX_VALUE;
-        private int max = Integer.MIN_VALUE;
-        private long sum;
-        private long count;
+        final Station station;
+
+        int min = Integer.MAX_VALUE;
+        int max = Integer.MIN_VALUE;
+        long sum;
+        long count;
+
+        MeasurementAggregator(Station station) {
+            this.station = station;
+        }
+
+        public Station station() {
+            return station;
+        }
+
     }
 
     private record ResultRow(double min, double mean, double max) {
